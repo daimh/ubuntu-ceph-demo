@@ -5,38 +5,38 @@ SshOpts = -i var/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/d
 SshIt = ssh -Tp 222$2 $(SshOpts) root@localhost
 Wait = function wt { touch $@.w && while ! $(SHELL) -c "$$*"; do echo -e "Waiting for '$@'. $$(( $$(date +%s) - $$(stat -c %Y $@.w) )) seconds." && sleep 4; done && rm -f $@.w; } && wt
 define TmplCeph
-	-fuser -k $@.qcow2 222$2/tcp
-	rm -f $@.qcow2
-	var/daiker run -e random -T 22-222$2 -b var/ubuntu-image.qcow2 $@.qcow2 &
-	$(Wait) $(SshIt) hostname
+var/ceph-node-$1 : var/ceph-node-$1-prepare-mon var/ubuntu-image
+	-fuser -k $$@.qcow2 222$2/tcp
+	rm -f $$@.qcow2
+	var/daiker run -e random -T 22-222$2 -b var/ubuntu-image.qcow2 $$@.qcow2 &
+	$$(Wait) $(SshIt) hostname
 	[ "$1" = "mon" ] || scp -P 222$2 $(SshOpts) -r var/keys.d root@localhost:
-	cat lib/ceph-node.m4 lib/ceph-node-$1.m4 | m4 -D m4Hostname=$1 -D m4Id=$2 | $(SshIt)
-	touch $@
+	( m4 -D m4Hostname=$1 -D m4Id=$2 lib/ceph-node.m4 && cat lib/ceph-node-$1.sh )  | $(SshIt)
+	touch $$@
+var/ceph-node-$1-prepare-mon : $(addprefix var/,$3)
+	[ "$1" = "mon" -o ! -f lib/$${@F}.sh ] || ssh -Tp 2220 $(SshOpts) root@localhost < lib/$${@F}.sh
+	touch $$@
 endef
 
-var/ceph-node-client : var/ceph-mds-on-mon
-	$(call TmplCeph,client,2)
-var/ceph-mds-on-mon : var/ceph-node-osd1 var/ceph-node-osd2
-	ssh -Tp 2221 $(SshOpts) root@localhost < lib/$(@F).sh &> $@.log
-	scp -P 2221 $(SshOpts) root@localhost:client.admin var/keys.d
-	touch $@
-var/ceph-node-osd% : var/keys
-	$(call TmplCeph,osd$*,1$*)
+all : $(addprefix var/ceph-node-,rbd filesystem)
+$(eval $(call TmplCeph,rbd,4,ceph-node-osd1 ceph-node-osd2))
+$(eval $(call TmplCeph,filesystem,3,ceph-node-osd1 ceph-node-osd2))
+$(eval $(call TmplCeph,osd2,2,keys))
+$(eval $(call TmplCeph,osd1,1,keys))
+$(eval $(call TmplCeph,mon,0,))
 var/keys : var/ceph-node-mon 
 	mkdir -p $@.d
-	scp -P 2221 $(SshOpts) root@localhost:/var/lib/ceph/bootstrap-osd/ceph.keyring $@.d
-	scp -P 2221 $(SshOpts) root@localhost:/etc/ceph/ceph.client.admin.keyring $@.d
-	scp -P 2221 $(SshOpts) root@localhost:/etc/ceph/ceph.conf $@.d
+	scp -P 2220 $(SshOpts) root@localhost:/var/lib/ceph/bootstrap-osd/ceph.keyring $@.d
+	scp -P 2220 $(SshOpts) root@localhost:/etc/ceph/ceph.client.admin.keyring $@.d
+	scp -P 2220 $(SshOpts) root@localhost:/etc/ceph/ceph.conf $@.d
 	touch $@
-var/ceph-node-mon : var/ubuntu-image
-	$(call TmplCeph,mon,1)
 
 var/ubuntu-image : var/ubuntu-auto.iso var/daiker
 	-fuser -k $@.qcow2
 	rm -f $@.qcow2
 	var/daiker build -i $< $@.qcow2 
 	touch $@
-var/ubuntu-auto.iso : lfs/ubuntu-22.04-live-server-amd64.iso var/id_ed25519
+var/ubuntu-auto.iso : lfs/ubuntu-22.04-live-server-amd64.iso var/id_ed25519 lib/user-data
 	[ ! -d $@.d ] || chmod -R u+wX $@.d && rm -rf $@.d
 	mkdir -p $@.d
 	bsdtar xfp $< -C$@.d
@@ -60,3 +60,7 @@ var/daiker :
 	wget -cO $@.tmp https://raw.githubusercontent.com/daimh/daiker/master/daiker
 	chmod +x $@.tmp
 	mv $@.tmp $@
+
+clean :
+	-fuser -k var/ceph*.qcow2
+	rm -rf var/ceph* var/keys*

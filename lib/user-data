@@ -18,8 +18,9 @@ autoinstall:
   user-data:
     runcmd:
       - |
-        #!/usr/bin/env bash
-        set -eux
+        set -xeEu
+        echo "blacklist floppy" > /etc/modprobe.d/blacklist-floppy.conf
+        update-initramfs -u
         apt update --yes
         apt upgrade --yes
         apt-get install --yes ceph
